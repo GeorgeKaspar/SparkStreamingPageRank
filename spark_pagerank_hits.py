@@ -44,28 +44,36 @@ def get_edges(sc, method='to', return_N=True):
 
 
 def init_ranks(edges, N):
-    initial_value = 1.0 / N if ALGORITHM == 'PAGERANK' else 1.0 / sqrt(N) 
+    initial_value = 1.0 / N if ALGORITHM == 'PAGERANK' else 1.0 / sqrt(N)
     ranks = edges.map(lambda x: (x[0], 1.0 / N))
     return ranks
 
 
-def step_ranks_pagerank(edges, ranks, N):
-    def compute_interactions(neighbors, rank):
-        n = len(neighbors)
-        for vertex in neighbors:
-            yield vertex, rank / N
+def compute_interactions(neighbors, rank):
+    n = len(neighbors)
+    for vertex in neighbors:
+        yield vertex, rank / n
 
+
+def step_ranks_pagerank(sc, edges, ranks, N):
     ranks = edges.join(ranks).flatMap(lambda x: compute_interactions(x[1][0], x[1][1])).reduceByKey(add)
     # weak vertices
     ranks = ranks.mapValues(lambda value: value * gamma + (1. - gamma) / N)
     return edges, ranks, N
 
 
+def step_ranks_hits(sc, edges, ranks, N):
+    ranks = edges.join(ranks).flatMap(lambda x: compute_interactions(x[1][0], x[1][1])).reduceByKey(add)
+    norm = sc.broadcast(math.sqrt(ranks.map(lambda x: x[1]**2).sum()))
+    ranks = ranks.map(lambda x: (x[0], x[1] / norm.value))
+    return edges, ranks, N
+
+
 def pagerank(sc):
     edges, N = get_edges(sc, method='to')
     ranks = init_ranks(edges, N)
-    for _ in PAGERANK_NUM_ITER:
-        edges, ranks, N = step_ranks_pagerank(edges, ranks, N)
+    for _ in range(PAGERANK_NUM_ITER):
+        edges, ranks, N = step_ranks_pagerank(sc, edges, ranks, N)
 
     ranks_sorted = ranks.sortBy(lambda x: x[1], ascending=False)
     for vertex, rank in ranks_sorted.take(10):
@@ -78,5 +86,15 @@ def hits(sc):
 
     rank_to = init_ranks(edges_to, N)
     rank_from = init_ranks(edges_from, N)
-    
 
+    for _ in range(HITS_NUM_ITER):
+        edges_to, ranks_to, N = step_ranks_hits(sc, edges_to, ranks_to, N)
+        edges_from, ranks_from, N = step_ranks_hits(sc, edges_from, ranks_from, N)
+    rank_to_sorted = rank_to.sortBy(lambda x: x[1], ascending=False)
+    rank_from_sorted = rank_from.sortBy(lambda x: x[1], ascending=False)
+
+    for vertex, rank in ranks_to_sorted.take(10):
+        print(vertex, rank)
+
+    for vertex, rank in ranks_from_sorted.take(10):
+        print(vertex, rank)
